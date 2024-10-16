@@ -17,38 +17,56 @@ public class Program
         await Task.Run(StartServer);
     }
 
-    private static Task StartServer()
+    private static async Task StartServer()
     {
+        var retryPolicy = ServerRetryPolicy.GetRetryPolicyAsync();
+
         while (true)
         {
-            using var pipeServer = new NamedPipeServerStream("HealthcarePipe", PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-            Console.WriteLine("Waiting for client connection...");
-            pipeServer.WaitForConnection();
-            Console.WriteLine("Client connected!");
+            await retryPolicy.ExecuteAsync(async () =>
+            {
+                await using var pipeServer = new NamedPipeServerStream("HealthcarePipe", PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
 
-            try
-            {
-                ReceiveFile(pipeServer);
-                Console.WriteLine("File received and saved.");
-            }
-            catch (IOException ex)
-            {
-                Console.WriteLine($"ERROR: {ex.Message}");
-            }
+                Console.WriteLine("Waiting for client connection...");
+                try
+                {
+                    await pipeServer.WaitForConnectionAsync();
+                    Console.WriteLine("Client connected!");
+
+                    // Receive the file
+                    await ReceiveFileAsync(pipeServer);
+                    Console.WriteLine("File received and saved.");
+                }
+                catch (IOException ex)
+                {
+                    Console.WriteLine($"ERROR: {ex.Message}");
+                    throw;
+                }
+                finally
+                {
+                    // Ensure the pipe server is disposed properly and client connection is released
+                    if (pipeServer.IsConnected)
+                    {
+                        pipeServer.Disconnect();
+                    }
+                }
+            });
         }
     }
 
-    static void ReceiveFile(NamedPipeServerStream pipeServer)
+
+    private static async Task ReceiveFileAsync(NamedPipeServerStream pipeServer)
     {
         var outputFile = "ReceivedFile.dat";
 
-        using var fileStream = new FileStream(outputFile, FileMode.Create, FileAccess.Write);
+        await using var fileStream = new FileStream(outputFile, FileMode.Create, FileAccess.Write);
         var buffer = new byte[4096];
         int bytesRead;
 
-        while ((bytesRead = pipeServer.Read(buffer, 0, buffer.Length)) > 0)
+        // Read and write asynchronously
+        while ((bytesRead = await pipeServer.ReadAsync(buffer, 0, buffer.Length)) > 0)
         {
-            fileStream.Write(buffer, 0, bytesRead);
+            await fileStream.WriteAsync(buffer, 0, bytesRead);
         }
     }
 }
